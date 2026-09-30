@@ -78,6 +78,19 @@ html, body {
   text-shadow: 0 2px 6px rgba(0, 0, 0, .65);
 }
 
+/* Cinnamoroll: texto blanco y nombre en azul cielo */
+#card[data-look="tema"][data-theme="cinna"] .kicker .b {
+  color: #fff;
+  font-weight: 700;
+  font-size: 28px;
+  letter-spacing: .08em;
+  text-shadow: 0 2px 6px rgba(20, 60, 110, .7);
+}
+#card[data-theme="cinna"] .name { filter: drop-shadow(0 4px 0 #1d4a78) drop-shadow(0 0 18px rgba(0, 0, 0, .6)); }
+#card[data-theme="cinna"] .name span {
+  background-image: linear-gradient(180deg, #ffffff 0%, #d4efff 50%, #7fc4f0 100%);
+}
+
 /* Kunai: sello de papel (ofuda) con marco rojo, como el papel explosivo */
 #card[data-look="tema"][data-theme="kunai"] .kicker .b {
   padding: 10px 34px 11px;

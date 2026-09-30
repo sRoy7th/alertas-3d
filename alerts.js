@@ -145,6 +145,14 @@ const TEX_RING = canvasTex(256, 256, (g, w) => {
   r.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = r; g.fillRect(0, 0, w, w);
 });
+const TEX_HEART = canvasTex(128, 128, (g, w) => {
+  g.fillStyle = '#fff';
+  g.beginPath();
+  g.moveTo(w / 2, w * 0.82);
+  g.bezierCurveTo(w * 0.08, w * 0.55, w * 0.12, w * 0.14, w / 2, w * 0.32);
+  g.bezierCurveTo(w * 0.88, w * 0.14, w * 0.92, w * 0.55, w / 2, w * 0.82);
+  g.fill();
+});
 const TEX_COIN = canvasTex(256, 256, (g, w) => {
   const c = w / 2;
   const base = g.createRadialGradient(c * 0.7, c * 0.6, 10, c, c, c);
@@ -362,6 +370,16 @@ const sfx = {
     tone(f * 2.76, 0, 0.18, { gain: 0.035 });
     tone(f * 5.4, 0, 0.1, { gain: 0.02 });
   },
+  // aleteo de orejas: soplidos suaves
+  flap(ms, rate = 7) {
+    for (let t = 0; t < ms / 1000; t += 1 / rate) noise(t, 0.09, { type: 'bandpass', from: 700, to: 350, q: 0.9, gain: 0.12, attack: 0.02 });
+  },
+  // campanitas tiernas
+  twinkle() {
+    [1568, 2093, 2637, 3136].forEach((f, i) => tone(f, i * 0.06, 0.5, { type: 'triangle', gain: 0.05 }));
+  },
+  // voltereta
+  whee() { tone(500, 0, 0.45, { type: 'sine', to: 1300, gain: 0.08 }); },
   // vidrio que se estrella: crujido agudo y tintineos
   glass() {
     noise(0, 0.18, { type: 'bandpass', from: 7000, to: 3500, q: 0.8, gain: 0.5, attack: 0.003 });
@@ -608,8 +626,8 @@ function makeRig(obj, fitSize, axis = 'y') {
 }
 const M = {};
 async function loadModels() {
-  const [puzzle, kunai, wallet] = await Promise.all(
-    ['puzzle_parts.glb', 'kunai.glb', 'wallet.glb'].map((f) => loader.loadAsync(CFG.models + f)),
+  const [puzzle, kunai, wallet, cinna] = await Promise.all(
+    ['puzzle_parts.glb', 'kunai.glb', 'wallet.glb', 'cinnamoroll.glb'].map((f) => loader.loadAsync(CFG.models + f)),
   );
   M.puzzle = makeRig(puzzle.scene, 2.3);
   // Piezas sueltas del rompecabezas (pieza_00 es el cuerpo). Se ensamblan de abajo hacia arriba:
@@ -625,6 +643,7 @@ async function loadModels() {
   M.wallet = makeRig(wallet.scene, 3.2, 'x');
   M.wallet.userData.rig = rigWallet(wallet.scene);
   M.kunaiSrc = kunai.scene;
+  M.cinna = makeCinnamoroll(cinna.scene);
 }
 
 // El monedero no tiene esqueleto: se arma un rig manual sobre la malla (coordenadas originales del .glb).
@@ -713,6 +732,102 @@ function rigWallet(root) {
     },
     info: { parts: comps.size, loose: loose.length, upper: w.filter((v) => v > 0.5).length },
   };
+}
+
+// Separa una malla en sus piezas sueltas (une costuras UV por posición). Cada pieza queda como Mesh
+// propio con su pivote en `pivotOf(verts)` (por defecto el centro), dentro de un Group que reemplaza a la malla.
+function splitParts(mesh, pivotOf) {
+  const g = mesh.geometry, P = g.attributes.position, I = g.index.array, n = P.count;
+  const parent = new Int32Array(n).map((_, i) => i);
+  const find = (x) => { while (parent[x] !== x) x = parent[x] = parent[parent[x]]; return x; };
+  const seen = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = `${P.getX(i).toFixed(4)},${P.getY(i).toFixed(4)},${P.getZ(i).toFixed(4)}`;
+    if (seen.has(k)) parent[find(i)] = find(seen.get(k)); else seen.set(k, i);
+  }
+  for (let t = 0; t < I.length; t += 3) { const a = find(I[t]); parent[find(I[t + 1])] = a; parent[find(I[t + 2])] = a; }
+  const groups = new Map();
+  for (let t = 0; t < I.length; t += 3) {
+    const r = find(I[t]);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(I[t], I[t + 1], I[t + 2]);
+  }
+  const holder = new THREE.Group();
+  holder.position.copy(mesh.position); holder.quaternion.copy(mesh.quaternion); holder.scale.copy(mesh.scale);
+  holder.name = mesh.name;
+  const parts = [];
+  for (const idx of groups.values()) {
+    const map = new Map(), verts = [];
+    for (const i of idx) if (!map.has(i)) { map.set(i, verts.length); verts.push(i); }
+    const geo = new THREE.BufferGeometry();
+    for (const [name, attr] of Object.entries(g.attributes)) {
+      // se lee por accesor: los atributos pueden venir intercalados en un mismo buffer
+      const get = ['getX', 'getY', 'getZ', 'getW'];
+      const arr = new Float32Array(verts.length * attr.itemSize);
+      verts.forEach((v, j) => { for (let c = 0; c < attr.itemSize; c++) arr[j * attr.itemSize + c] = attr[get[c]](v); });
+      geo.setAttribute(name, new THREE.BufferAttribute(arr, attr.itemSize, false));
+    }
+    geo.setIndex(idx.map((i) => map.get(i)));
+    geo.computeBoundingBox();
+    const pv = pivotOf ? pivotOf(geo) : geo.boundingBox.getCenter(new THREE.Vector3());
+    geo.translate(-pv.x, -pv.y, -pv.z);
+    const m = new THREE.Mesh(geo, mesh.material);
+    m.position.copy(pv);
+    m.userData.home = pv.clone();
+    m.userData.tris = idx.length / 3;
+    holder.add(m);
+    parts.push(m);
+  }
+  mesh.parent.add(holder);
+  mesh.parent.remove(mesh);
+  return { holder, parts: parts.sort((a, b) => b.userData.tris - a.userData.tris) };
+}
+
+// Cinnamoroll: sin esqueleto, pero con piezas sueltas. Se separan y se les pone pivote donde se unen al cuerpo
+// (raíz de las orejas, hombros, cadera) y un grupo "cuello" para que cabeza, orejas y ositito se muevan juntos.
+function makeCinnamoroll(root) {
+  const byNode = {};
+  root.traverse((o) => { if (o.isMesh) byNode[o.parent.name] = o; });
+  const nearest = (to) => (geo) => {
+    const P = geo.attributes.position, v = new THREE.Vector3(), best = new THREE.Vector3();
+    let d = Infinity;
+    for (let i = 0; i < P.count; i++) {
+      v.fromBufferAttribute(P, i);
+      const dd = v.distanceToSquared(to);
+      if (dd < d) { d = dd; best.copy(v); }
+    }
+    return best;
+  };
+  // Orejas: pivote en la raíz (arriba, pegado a la cabeza); brazos y patas: el punto más cercano al centro del cuerpo
+  const headSplit = splitParts(byNode.polySurface19, (geo) => {
+    const c = geo.boundingBox.getCenter(new THREE.Vector3());
+    return Math.abs(c.x) < 0.2 ? c : nearest(new THREE.Vector3(Math.sign(c.x) * 0.28, 1.0, 0))(geo);
+  });
+  const bodySplit = splitParts(byNode.polySurface5, (geo) => {
+    const c = geo.boundingBox.getCenter(new THREE.Vector3());
+    return Math.abs(c.x) < 0.15 ? c : nearest(new THREE.Vector3(0, 0.3, 0))(geo);
+  });
+  const bear = byNode.pCube11;
+
+  const [head, ...ears] = headSplit.parts;
+  const earR = ears.find((m) => m.position.x > 0), earL = ears.find((m) => m.position.x < 0);
+  const bp = bodySplit.parts;
+  const tail = bp.reduce((a, b) => (b.position.z < a.position.z ? b : a));
+  const limbs = bp.filter((m) => m !== tail && Math.abs(m.position.x) > 0.15);
+  const arms = limbs.filter((m) => m.position.y > 0.3), feet = limbs.filter((m) => m.position.y <= 0.3);
+  const armR = arms.find((m) => m.position.x > 0), armL = arms.find((m) => m.position.x < 0);
+
+  // Cuello: pivote bajo la cabeza; cabeza, orejas y ositito cuelgan de él
+  const neck = new THREE.Group();
+  neck.position.set(0, 0.5, 0);
+  headSplit.holder.parent.add(neck);
+  root.updateMatrixWorld(true);
+  neck.updateMatrixWorld(true);
+  for (const o of [head, earR, earL, bear]) neck.attach(o);
+
+  const rigd = makeRig(root, 2.5);
+  rigd.userData.cinna = { neck, head, earR, earL, armR, armL, feet, tail, bear, bearY: bear.position.y };
+  return rigd;
 }
 
 // Cada kunai es un clon con su propio material para el papel (se quema solo).
@@ -1391,6 +1506,126 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
 }
 
 // ============================================================
+// Alerta: Cinnamoroll volando
+// ============================================================
+const SKY = [C('#ffffff'), C('#d8f0ff'), C('#8fd0ff'), C('#4f9fd8')];
+const PINK = [C('#ffffff'), C('#ffd6ea'), C('#ff9cc8'), C('#e0609a')];
+async function cinnaAlert({ kicker, name, amount = '', msg = '', hold = CFG.holdMs }) {
+  const R = M.cinna, c = R.userData.cinna, idle = R.userData.idle;
+  const home = ANCHOR.clone().add(new THREE.Vector3(0, 0.05, 0));
+  // flap: rapidez del aleteo; wave: saludo del brazo; kick: pataleo; tilt: inclinación de vuelo
+  const st = { flap: 14, lift: 1, wave: 0, kick: 1, tilt: 0.35, roll: 0, hop: 0 };
+  let phase = 0;
+  R.visible = true;
+  R.scale.setScalar(1);
+  R.rotation.set(0, 0, 0);
+  idle.position.set(0, 0, 0);
+
+  const anim = (now, dt) => {
+    const s = now / 1000;
+    phase += dt * st.flap;
+    // orejas como alas: suben y bajan desde la raíz
+    const f = 0.35 + st.lift * (0.5 + 0.5 * Math.sin(phase));
+    c.earR.rotation.set(0, 0, f);
+    c.earL.rotation.set(0, 0, -f);
+    // cuerpo flotando y cabeza ladeada
+    idle.position.y = Math.sin(s * 2.4) * 0.12 + Math.sin(phase) * 0.02;
+    idle.rotation.set(st.tilt + Math.sin(s * 1.7) * 0.05, Math.sin(s * 0.9) * 0.25, st.roll + Math.sin(s * 1.3) * 0.06);
+    c.neck.rotation.set(Math.sin(s * 2.1) * 0.06, 0, Math.sin(s * 1.6) * 0.14);
+    // saludo con el brazo derecho; el izquierdo acompaña
+    c.armR.rotation.set(0, 0, st.wave * (1.7 + Math.sin(s * 11) * 0.45) + (1 - st.wave) * Math.sin(s * 3) * 0.2);
+    c.armL.rotation.set(0, 0, -Math.sin(s * 3 + 1) * 0.2 - st.wave * 0.3);
+    // pataleo alternado y colita inquieta
+    c.feet.forEach((ft, i) => ft.rotation.set(Math.sin(s * 9 + i * Math.PI) * 0.35 * st.kick, 0, 0));
+    c.tail.rotation.set(0, Math.sin(s * 6) * 0.35, Math.sin(s * 4) * 0.1);
+    // el ositito rebota sobre la cabeza
+    const b = Math.abs(Math.sin(s * 5.5));
+    c.bear.position.y = c.bearY + b * 0.05 + st.hop;
+    c.bear.scale.set(1 + (1 - b) * 0.08, 1 - (1 - b) * 0.08, 1 + (1 - b) * 0.08);
+    // nubecitas que suelta al volar
+    if (Math.random() < dt * (st.flap > 10 ? 18 : 5)) {
+      SMOKE.spawn({
+        pos: R.position.clone().add(new THREE.Vector3(rand(-0.6, 0.6), rand(-0.9, -0.4), -0.3)),
+        vel: new THREE.Vector3(rand(-0.3, 0.3), rand(-0.4, -0.1), 0), drag: 1.5, life: rand(0.8, 1.3),
+        size: rand(0.2, 0.35), size1: rand(0.5, 0.8), map: TEX_SMOKE, colors: [C('#ffffff'), C('#e4f4ff')], alpha: 0.7,
+      });
+    }
+  };
+  emitters.add(anim);
+
+  // Entrada: llega volando desde la derecha, aleteando rápido e inclinado
+  const from = home.clone().add(new THREE.Vector3(7, 0.6, 0));
+  sfx.flap(1100, 12);
+  await tween(1100, (t) => {
+    const e = ease.outCubic(t);
+    R.position.lerpVectors(from, home, e);
+    R.position.y += Math.sin(t * Math.PI) * 0.3;
+    st.roll = 0.35 * (1 - e);
+    st.tilt = 0.35 * (1 - e) + 0.08;
+  });
+  // se frena, aletea normal y saluda
+  tween(500, (t) => { st.flap = lerp(14, 6, t); st.lift = lerp(1, 0.7, t); st.wave = t; });
+  sfx.twinkle();
+  sparkBurst(home.clone().setZ(0.5), 40, { speed: 2.5, colors: SKY, size: 0.09 });
+  showCard({ kicker, name, amount, msg, accent: '#8fd0ff', theme: 'cinna' });
+
+  // corazones y brillitos mientras flota
+  const hearts = (now, dt) => {
+    if (Math.random() < dt * 5) {
+      const side = Math.random() < 0.5 ? -1 : 1;
+      FX.spawn({
+        pos: R.position.clone().add(new THREE.Vector3(side * rand(0.9, 1.6), rand(0, 1), 0.6)),
+        vel: new THREE.Vector3(side * rand(0.1, 0.4), rand(0.6, 1.1), 0), life: rand(1.4, 2),
+        size: rand(0.28, 0.42), size1: 0.18, map: TEX_HEART, colors: PINK, spin: rand(-0.5, 0.5),
+      });
+    }
+    if (Math.random() < dt * 10) {
+      FX.spawn({
+        pos: R.position.clone().add(new THREE.Vector3(rand(-1.5, 1.5), rand(-1, 1.5), 0.3)),
+        vel: new THREE.Vector3(0, rand(0.1, 0.4), 0), life: rand(0.6, 1.1), size: rand(0.05, 0.1), colors: SKY,
+      });
+    }
+  };
+  emitters.add(hearts);
+  sfx.flap(hold, 6);
+  await wait(Math.max(900, hold * 0.35));
+  tween(300, (t) => { st.wave = 1 - t; });
+
+  // Voltereta en el aire: gira completo, el ositito brinca y cae
+  sfx.whee();
+  const y0 = R.position.y;
+  await tween(900, (t) => {
+    R.rotation.x = -ease.inOutSine(t) * Math.PI * 2;
+    R.position.y = y0 + Math.sin(t * Math.PI) * 0.5;
+    st.hop = Math.sin(t * Math.PI) * 0.12;
+    st.flap = 6 + Math.sin(t * Math.PI) * 8;
+  });
+  R.rotation.x = 0;
+  st.hop = 0;
+  sparkBurst(R.position.clone().setZ(0.5), 30, { speed: 2, colors: PINK, size: 0.08 });
+  sfx.twinkle();
+  await wait(Math.max(700, hold * 0.65 - 900));
+
+  // Salida: se despide y sale volando hacia arriba a la izquierda
+  tween(300, (t) => { st.wave = t; });
+  await wait(450);
+  emitters.delete(hearts);
+  hideCard();
+  sfx.flap(900, 12);
+  const p0 = R.position.clone(), to = p0.clone().add(new THREE.Vector3(-6, 4, 0));
+  await tween(900, (t) => {
+    const e = ease.inCubic(t);
+    st.flap = 14;
+    st.lift = 1;
+    st.roll = -0.35 * e;
+    st.tilt = 0.08 + 0.3 * e;
+    R.position.lerpVectors(p0, to, e);
+  });
+  emitters.delete(anim);
+  R.visible = false;
+}
+
+// ============================================================
 // Cola de alertas
 // ============================================================
 const queue = [];
@@ -1435,6 +1670,7 @@ const api = {
     level: 4, raid: true, color: '#b36bff', kicker: `¡Raid de ${viewers} espectadores!`, name, hold: 7000,
   })),
   tip: ({ name, amount, msg = '' }) => enqueue(() => walletAlert({ name, amount, msg })),
+  cinna: (name) => enqueue(() => cinnaAlert({ kicker: 'Nuevo seguidor', name })),
 };
 window.alerts3d = api;
 
@@ -1525,7 +1761,7 @@ window.__ready = true;
 // ============================================================
 if (TEST) {
   document.body.classList.add('test');
-  window.__dbg = { THREE, M, JAW, scene, camera, makeKunai, ANCHOR, rays, halo, loader, makeRig };
+  window.__dbg = { THREE, M, JAW, splitParts, scene, camera, makeKunai, ANCHOR, rays, halo, loader, makeRig };
   const panel = document.createElement('div');
   panel.id = 'panel';
   const btn = (label, fn) => {
@@ -1536,6 +1772,7 @@ if (TEST) {
   };
   panel.innerHTML = '<b>Alertas 3D · prueba</b>';
   btn('Follow', () => api.follow('YugiMuto_99'));
+  btn('Cinnamoroll', () => api.cinna('Nube_Esponjosa'));
   btn('Sub nueva', () => api.sub({ name: 'NarutoFan' }));
   btn('Resub 12 meses T3', () => api.sub({ name: 'Kakashi_Sensei', months: 12, tier: '3000', msg: '¡Un año ya! Sigue así 🔥' }));
   btn('Regalo 5 subs', () => api.gift({ sender: 'JiraiyaSama', count: 5 }));
