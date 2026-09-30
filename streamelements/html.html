@@ -387,6 +387,15 @@ const sfx = {
     tone(f * 2.76, 0, 0.18, { gain: 0.035 });
     tone(f * 5.4, 0, 0.1, { gain: 0.02 });
   },
+  // broche del monedero al cerrarse: dos golpecitos metálicos
+  clasp() {
+    for (const [d, f] of [[0, 1800], [0.05, 2600]]) {
+      tone(f, d, 0.12, { type: 'square', gain: 0.04 });
+      tone(f * 1.5, d, 0.08, { gain: 0.05 });
+    }
+    noise(0, 0.06, { type: 'highpass', from: 5000, to: 3000, gain: 0.2 });
+    tone(220, 0, 0.12, { to: 120, gain: 0.25 });
+  },
   click() {
     const f = rand(2600, 3400);
     tone(f, 0, 0.09, { type: 'square', gain: 0.035 });
@@ -485,7 +494,96 @@ async function loadModels() {
   wallet.scene.rotation.y = -Math.PI / 2;
   wallet.scene.updateMatrixWorld(true);
   M.wallet = makeRig(wallet.scene, 3.2, 'x');
+  M.wallet.userData.rig = rigWallet(wallet.scene);
   M.kunaiSrc = kunai.scene;
+}
+
+// El monedero no tiene esqueleto: se arma un rig manual sobre la malla (coordenadas originales del .glb).
+// La boca abre hacia +Z; las bisagras del broche están en y≈23, z≈0. La mitad de arriba (labio, ojos,
+// broche superior) gira sobre ese eje con una transición suave hacia la espalda para que la tela se doble.
+// Las piezas sueltas que quedan frente a la rana (dos monedas y el papel) se pueden hacer temblar.
+const JAW = { y: 23, z: 0, split: 0.17, closed: 0.95 };
+function rigWallet(root) {
+  let mesh = null;
+  root.traverse((o) => { if (o.isMesh) mesh = o; });
+  const g = mesh.geometry, P = g.attributes.position, N = g.attributes.normal, I = g.index.array;
+  const n = P.count, p0 = Float32Array.from(P.array), n0 = Float32Array.from(N.array);
+
+  // Partes sueltas: une vértices en la misma posición (costuras UV) y luego por triángulos
+  const parent = new Int32Array(n).map((_, i) => i);
+  const find = (x) => { while (parent[x] !== x) x = parent[x] = parent[parent[x]]; return x; };
+  const seen = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = `${p0[i * 3].toFixed(2)},${p0[i * 3 + 1].toFixed(2)},${p0[i * 3 + 2].toFixed(2)}`;
+    if (seen.has(k)) parent[find(i)] = find(seen.get(k)); else seen.set(k, i);
+  }
+  for (let t = 0; t < I.length; t += 3) {
+    const a = find(I[t]);
+    parent[find(I[t + 1])] = a;
+    parent[find(I[t + 2])] = a;
+  }
+  const comps = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    if (!comps.has(r)) comps.set(r, { verts: [], c: [0, 0, 0] });
+    const c = comps.get(r);
+    c.verts.push(i);
+    for (let k = 0; k < 3; k++) c.c[k] += p0[i * 3 + k];
+  }
+  const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const side = (y, z) => (y - JAW.y) * Math.cos(JAW.split) - (z - JAW.z) * Math.sin(JAW.split);
+  const w = new Float32Array(n);
+  const loose = [];
+  for (const c of comps.values()) {
+    c.c = c.c.map((v) => v / c.verts.length);
+    if (c.c[2] > 45) { loose.push({ verts: c.verts, c: c.c, ph: Math.random() * 10 }); continue; }
+    const big = c.verts.length > 500;
+    for (const i of c.verts) {
+      const y = big ? p0[i * 3 + 1] : c.c[1], z = big ? p0[i * 3 + 2] : c.c[2];
+      w[i] = smooth(-3, 3, side(y, z)) * smooth(-40, 0, z);
+    }
+  }
+
+  const rot = (arr, src, i, cy, cz, th) => {
+    const y = src[i * 3 + 1] - cy, z = src[i * 3 + 2] - cz, c = Math.cos(th), s = Math.sin(th);
+    arr[i * 3 + 1] = cy + y * c - z * s;
+    arr[i * 3 + 2] = cz + y * s + z * c;
+  };
+  return {
+    // jaw: 0 abierta → 1 cerrada; shake: intensidad del temblor de las monedas sueltas
+    update(jaw, shake, t) {
+      const A = P.array, B = N.array;
+      A.set(p0);
+      B.set(n0);
+      const th = jaw * JAW.closed;
+      if (th) {
+        for (let i = 0; i < n; i++) {
+          if (!w[i]) continue;
+          rot(A, p0, i, JAW.y, JAW.z, th * w[i]);
+          rot(B, n0, i, 0, 0, th * w[i]);
+        }
+      }
+      for (const L of loose) {
+        const rx = Math.sin(t * 23 + L.ph) * shake, rz = Math.sin(t * 19 + L.ph * 2) * shake;
+        const lift = Math.abs(Math.sin(t * 31 + L.ph)) * shake * 14;
+        const [cx, cy, cz] = L.c;
+        const cX = Math.cos(rx), sX = Math.sin(rx), cZ = Math.cos(rz), sZ = Math.sin(rz);
+        for (const i of L.verts) {
+          for (const [dst, src, o, up] of [[A, p0, L.c, lift], [B, n0, [0, 0, 0], 0]]) {
+            let x = src[i * 3] - o[0], y = src[i * 3 + 1] - o[1], z = src[i * 3 + 2] - o[2];
+            [y, z] = [y * cX - z * sX, y * sX + z * cX];
+            [x, y] = [x * cZ - y * sZ, x * sZ + y * cZ];
+            dst[i * 3] = o[0] + x;
+            dst[i * 3 + 1] = o[1] + y + up;
+            dst[i * 3 + 2] = o[2] + z;
+          }
+        }
+      }
+      P.needsUpdate = true;
+      N.needsUpdate = true;
+    },
+    info: { parts: comps.size, loose: loose.length, upper: w.filter((v) => v > 0.5).length },
+  };
 }
 
 // Cada kunai es un clon con su propio material para el papel (se enciende solo)
@@ -800,6 +898,10 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
   const pose = { yaw: FRONT, pitch: 0.32, roll: 0, sway: 0 };
   const spring = { v: 0, x: 0 };
   const nod = { v: 0, x: 0 }; // cabeceo de "ñam" al tragar
+  const mouthRig = W.userData.rig;
+  const jaw = { x: 0 }; // 0 abierta, 1 cerrada
+  let rattle = 0; // temblor extra de las monedas del piso; decae solo
+  mouthRig.update(0, 0, 0);
   let got = 0;
   W.visible = true;
   W.scale.setScalar(1);
@@ -814,6 +916,8 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
     spring.x += spring.v * dt;
     nod.v += (-nod.x * 160 - nod.v * 10) * dt;
     nod.x += nod.v * dt;
+    rattle *= Math.exp(-dt * 5);
+    mouthRig.update(jaw.x, 0.04 + rattle, s);
     W.scale.setScalar(1 + 0.22 * Math.min(1, got / 40));
     idle.scale.set(1 + spring.x, 1 - spring.x, 1 + spring.x);
     // bamboleo tipo pato: se ladea al ritmo de los brinquitos y gira poco para no perder el frente
@@ -838,6 +942,7 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
         got++;
         spring.v += 1.4;
         nod.v += 2.2;
+        rattle = Math.min(0.35, rattle + 0.12);
         sfx.coin();
         FX.spawn({ pos: c.mesh.position.clone(), vel: new THREE.Vector3(0, 0.6, 0), life: 0.35, size: 0.35, size1: 0.6, colors: GOLD });
         bumpAmount(money(amount * got / n));
@@ -855,6 +960,7 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
   sfx.land();
   shake(0.06);
   spring.v += 2;
+  rattle = 0.4;
 
   showCard({ kicker: 'Donación', name, amount: money(0), msg, accent: '#ff8a2a', theme: 'wallet' });
 
@@ -876,9 +982,14 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
   while (got < n) await wait(50);
   bumpAmount(money(amount));
 
-  // Se queda quieta de frente y da un salto con vuelta completa
+  // Se queda quieta de frente, cierra la boca de golpe y da un salto con vuelta completa
   const sw0 = pose.sway;
   await tween(300, (t) => { pose.sway = sw0 * (1 - t); });
+  await tween(220, (t) => { jaw.x = ease.outBack(t); });
+  sfx.clasp();
+  spring.v += 2.5;
+  rattle = 0.3;
+  await wait(250);
   sfx.shimmer(2);
   sparkBurst(mouth(), 50, { speed: 3.5, colors: GOLD });
   const y0 = W.position.y;
@@ -890,6 +1001,7 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
   pose.yaw = FRONT;
   sfx.land();
   spring.v += 3;
+  rattle = 0.45;
 
   // Espera contenta, con un balanceo suave
   tween(500, (t) => { pose.sway = 0.3 * t; });
@@ -1046,7 +1158,7 @@ window.__ready = true;
 // ============================================================
 if (TEST) {
   document.body.classList.add('test');
-  window.__dbg = { THREE, M, scene, camera, makeKunai, ANCHOR, rays, halo, loader, makeRig };
+  window.__dbg = { THREE, M, JAW, scene, camera, makeKunai, ANCHOR, rays, halo, loader, makeRig };
   const panel = document.createElement('div');
   panel.id = 'panel';
   const btn = (label, fn) => {
