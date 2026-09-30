@@ -1,0 +1,260 @@
+:root {
+  --gold-1: #fff3c4;
+  --gold-2: #f5c451;
+  --gold-3: #b9791a;
+  --ink: #1a0f02;
+  --accent: #f5c451;
+}
+
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* Lienzo fijo 1920x1080 (tamaño de la browser source); se escala si la ventana es otra */
+#stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  transform-origin: 0 0;
+}
+
+#gl {
+  position: absolute;
+  inset: 0;
+  width: 1920px;
+  height: 1080px;
+}
+
+#card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 745px;
+  text-align: center;
+  pointer-events: none;
+  font-family: "Outfit", system-ui, sans-serif;
+}
+
+#card > div { opacity: 0; }
+
+#card .kicker {
+  display: inline-block;
+  text-transform: uppercase;
+}
+/* .b es la etiqueta (así la animación de entrada no pisa sus transformaciones) y .t el texto */
+#card .kicker .b {
+  position: relative;
+  display: inline-block;
+  font-weight: 700;
+  font-size: 26px;
+}
+#card .kicker .t { display: inline-block; }
+
+/* ---- A · Tema: cada objeto tiene su propia etiqueta ---- */
+
+/* Rompecabezas: texto blanco sencillo con sombra suave */
+#card[data-look="tema"][data-theme="puzzle"] .kicker .b {
+  color: #fff;
+  font-weight: 700;
+  font-size: 28px;
+  letter-spacing: .08em;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, .65);
+}
+
+/* Kunai: sello de papel (ofuda) con marco rojo, como el papel explosivo */
+#card[data-look="tema"][data-theme="kunai"] .kicker .b {
+  padding: 10px 34px 11px;
+  background:
+    repeating-linear-gradient(92deg, rgba(120, 80, 30, .05) 0 2px, transparent 2px 7px),
+    #f4e8cc;
+  border: 4px solid #c8321e;
+  outline: 1.5px solid #c8321e;
+  outline-offset: -9px;
+  color: #2a1208;
+  font-family: "Shippori Mincho B1", serif;
+  font-weight: 800;
+  font-size: 27px;
+  letter-spacing: .06em;
+  transform: rotate(-2.5deg);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, .55);
+}
+
+/* Rana: etiqueta de precio naranja con ojal */
+#card[data-look="tema"][data-theme="wallet"] .kicker .b {
+  padding: 9px 30px 9px 52px;
+  background: linear-gradient(180deg, #ffa24a, #f06a12);
+  clip-path: polygon(24px 0, 100% 0, 100% 100%, 24px 100%, 0 50%);
+  color: #2a1100;
+  font-weight: 800;
+  font-size: 26px;
+  letter-spacing: .1em;
+  filter: drop-shadow(0 6px 0 #5a2600);
+}
+#card[data-look="tema"][data-theme="wallet"] .kicker .b::before {
+  content: "";
+  position: absolute;
+  left: 22px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #2a1100;
+}
+
+/* ---- B · Listón: franja inclinada con sombra dura ---- */
+#card[data-look="liston"] .kicker .b {
+  padding: 8px 34px 9px;
+  background: var(--accent);
+  color: #120a02;
+  font-weight: 800;
+  font-size: 27px;
+  letter-spacing: .1em;
+  transform: skewX(-14deg);
+  box-shadow: 7px 7px 0 rgba(0, 0, 0, .6);
+}
+#card[data-look="liston"] .kicker .t { transform: skewX(14deg); }
+#card[data-look="liston"] .kicker .b::before {
+  content: "";
+  position: absolute;
+  left: -20px;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  background: var(--accent);
+  box-shadow: 7px 7px 0 rgba(0, 0, 0, .6);
+}
+
+/* ---- C · Editorial: solo tipografía entre filetes ---- */
+#card[data-look="editorial"] .kicker .b {
+  display: inline-flex;
+  align-items: center;
+  gap: 20px;
+  color: #f7dc8e;
+  font-family: "Cinzel", serif;
+  font-weight: 700;
+  font-size: 25px;
+  letter-spacing: .24em;
+  text-shadow: 0 2px 0 #1a0f02, 0 0 14px rgba(0, 0, 0, .9);
+}
+#card[data-look="editorial"] .kicker .b::before,
+#card[data-look="editorial"] .kicker .b::after {
+  content: "";
+  width: 110px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent));
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .6);
+}
+#card[data-look="editorial"] .kicker .b::after { transform: scaleX(-1); }
+
+#card .name {
+  margin-top: 10px;
+  font-family: "Cinzel", serif;
+  font-weight: 900;
+  font-size: 86px;
+  line-height: 1.05;
+  white-space: nowrap;
+  filter: drop-shadow(0 4px 0 var(--ink)) drop-shadow(0 0 18px rgba(0, 0, 0, .75));
+}
+
+#card .name span {
+  display: inline-block;
+  background: linear-gradient(180deg, var(--gold-1) 0%, var(--gold-2) 48%, var(--gold-3) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 0;
+  transform: translateY(40px) rotateX(80deg) scale(.6);
+}
+
+#card .amount {
+  font-family: "Outfit", sans-serif;
+  font-weight: 800;
+  font-size: 64px;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 4px 0 var(--ink), 0 0 22px var(--accent);
+}
+
+#card .amount:empty, #card .msg:empty { display: none; }
+
+#card .msg {
+  display: inline-block;
+  max-width: 1100px;
+  margin-top: 12px;
+  padding: 10px 26px;
+  border-radius: 14px;
+  background: rgba(20, 10, 0, .72);
+  color: #fff;
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+#card.show > div { animation: fadeUp .5s cubic-bezier(.2, .9, .3, 1.2) forwards; }
+#card.show .name { animation-delay: .05s; }
+#card.show .amount { animation-delay: .25s; }
+#card.show .msg { animation-delay: .45s; }
+#card.show .name span { animation: letterIn .55s cubic-bezier(.2, .9, .3, 1.3) forwards; }
+#card.hide > div { opacity: 1; animation: fadeOut .4s ease-in forwards; }
+#card.hide .name span { opacity: 1; transform: none; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes letterIn {
+  to { opacity: 1; transform: none; }
+}
+@keyframes fadeOut {
+  to { opacity: 0; transform: translateY(-16px) scale(.96); }
+}
+@keyframes bump {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+#card .amount.bump { animation: bump .18s ease-out; opacity: 1; }
+
+/* ---- Modo prueba (?test) ---- */
+body.test {
+  background:
+    radial-gradient(ellipse at 30% 20%, #2b3a55 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 90%, #3d2140 0%, transparent 55%),
+    #11141c;
+}
+
+#panel {
+  position: fixed;
+  right: 12px;
+  top: 12px;
+  z-index: 10;
+  width: 210px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(10, 12, 18, .88);
+  border: 1px solid #333a4a;
+  font: 13px/1.3 "Outfit", system-ui, sans-serif;
+  color: #cfd6e4;
+  display: grid;
+  gap: 6px;
+}
+#panel b { color: #fff; font-size: 14px; }
+#panel button {
+  padding: 7px 10px;
+  border: 1px solid #3a4256;
+  border-radius: 8px;
+  background: #1c2230;
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+#panel button:hover { background: #283146; }
+#panel small { color: #7f8aa3; }

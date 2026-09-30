@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Alertas 3D</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Outfit:wght@500;700;800&family=Shippori+Mincho+B1:wght@800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <div id="card">
+    <div class="kicker"></div>
+    <div class="name"></div>
+    <div class="amount"></div>
+    <div class="msg"></div>
+  </div>
+</div>
+<script>
+  // Guarda la configuración y los eventos de StreamElements que lleguen antes de que cargue el módulo 3D
+  window.__se = { load: null, queue: [], ready: false };
+  addEventListener('onWidgetLoad', function (e) { __se.load = e.detail; });
+  addEventListener('onEventReceived', function (e) { if (!__se.ready) __se.queue.push(e.detail); });
+</script>
+<script type="module" src="alerts.js"></script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "modelsUrl": {
+    "type": "text",
+    "label": "URL pública de la carpeta de modelos (.glb)",
+    "value": "https://sroy7th.github.io/alertas-3d/models/"
+  },
+  "volume": {
+    "type": "slider",
+    "label": "Volumen",
+    "value": 60,
+    "min": 0,
+    "max": 100,
+    "step": 1
+  },
+  "holdSeconds": {
+    "type": "number",
+    "label": "Segundos en pantalla por alerta",
+    "value": 5,
+    "min": 2,
+    "max": 15
+  },
+  "currency": {
+    "type": "text",
+    "label": "Símbolo de moneda",
+    "value": "$"
+  },
+  "look": {
+    "type": "dropdown",
+    "label": "Estilo de la etiqueta",
+    "value": "tema",
+    "options": {
+      "tema": "Temática por objeto",
+      "liston": "Listón",
+      "editorial": "Editorial"
+    }
+  }
+}
