@@ -387,6 +387,11 @@ const sfx = {
     tone(f * 2.76, 0, 0.18, { gain: 0.035 });
     tone(f * 5.4, 0, 0.1, { gain: 0.02 });
   },
+  // nube de humo de un clon de sombra
+  poof() {
+    noise(0, 0.35, { type: 'lowpass', from: 1800, to: 300, gain: 0.45, attack: 0.01 });
+    tone(420, 0, 0.18, { to: 160, gain: 0.18 });
+  },
   // broche del monedero al cerrarse: dos golpecitos metálicos
   clasp() {
     for (const [d, f] of [[0, 1800], [0.05, 2600]]) {
@@ -622,7 +627,55 @@ function makeKunai() {
   }
   const rig = makeRig(obj, 2.9, 'y');
   rig.userData.paper = paper;
+  rig.updateMatrixWorld(true);
+  // Punta de la hoja relativa al centro del rig (para clavarla exactamente en una letra)
+  if (blade) {
+    const v = new THREE.Vector3(), tip = new THREE.Vector3();
+    let best = -Infinity;
+    const bp = blade.geometry.attributes.position;
+    for (let i = 0; i < bp.count; i++) {
+      v.fromBufferAttribute(bp, i).applyMatrix4(blade.matrixWorld);
+      const d = v.dot(KUNAI_DIR);
+      if (d > best) { best = d; tip.copy(v); }
+    }
+    rig.userData.tip = tip;
+  }
+  if (paper && blade) setupPaperBurn(paper, blade);
   return rig;
+}
+
+// El papel se consume desde la punta lejana hacia el kunai: u = 0 junto al aro, u = 1 en el extremo.
+// Un shader descarta lo ya quemado, pinta una franja carbonizada y un borde incandescente.
+function setupPaperBurn(paper, blade) {
+  const cb = new THREE.Box3().setFromObject(blade).getCenter(new THREE.Vector3());
+  const cp = new THREE.Box3().setFromObject(paper).getCenter(new THREE.Vector3());
+  const a = paper.worldToLocal(cp.clone()).sub(paper.worldToLocal(cb.clone())).normalize();
+  const pos = paper.geometry.attributes.position;
+  const proj = [];
+  for (let i = 0; i < pos.count; i++) proj.push(new THREE.Vector3().fromBufferAttribute(pos, i).dot(a));
+  const min = Math.min(...proj), len = Math.max(...proj) - min;
+  const burn = { uBurn: { value: 1.02 }, uAxis: { value: a }, uMin: { value: min }, uLen: { value: len } };
+  const m = paper.material;
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, burn);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform vec3 uAxis; uniform float uMin; uniform float uLen; varying float vBurnU;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBurnU = (dot(position, uAxis) - uMin) / uLen;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uBurn; varying float vBurnU;')
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (vBurnU > uBurn) discard;')
+      .replace('#include <emissivemap_fragment>', [
+        '#include <emissivemap_fragment>',
+        'float dB = uBurn - vBurnU;',
+        'float edge = 1.0 - smoothstep(0.0, 0.09, dB);',
+        'float charred = 1.0 - smoothstep(0.04, 0.2, dB);',
+        'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.05, 0.025, 0.015), charred * 0.92);',
+        'totalEmissiveRadiance += vec3(1.0, 0.45, 0.08) * edge * 8.0;',
+      ].join('\n'));
+  };
+  m.customProgramCacheKey = () => 'paper-burn';
+  paper.userData.burn = burn;
+  paper.userData.u = proj.map((q) => (q - min) / len);
 }
 
 // ============================================================
@@ -751,42 +804,147 @@ async function puzzleAlert({ level = 1, color = '#ffd36b', kicker, name, amount 
 // ============================================================
 // Alerta: Kunai explosivo (subs y regalos)
 // ============================================================
+// Posición (mundo, plano z=0) de la parte alta de una letra del nombre, a partir del layout del DOM
+const PX = 201.5; // píxeles por unidad en z=0
+function letterPoint(span) {
+  const x = card.offsetLeft + span.offsetLeft + span.offsetWidth / 2;
+  const y = card.offsetTop + el.name.offsetTop + span.offsetTop + span.offsetHeight * 0.45;
+  return new THREE.Vector3((x - 960) / PX, (540 - y) / PX, 0);
+}
+function joltLetters(pt, radius = 1.2) {
+  for (const sp of el.name.children) {
+    const d = letterPoint(sp).distanceTo(pt);
+    if (d > radius) continue;
+    const k = 1 - d / radius;
+    sp.animate([
+      { transform: 'translate(0,0) rotate(0)' },
+      { transform: `translate(${rand(-4, 4) * k}px, ${10 * k}px) rotate(${rand(-8, 8) * k}deg)` },
+      { transform: 'translate(0,0) rotate(0)' },
+    ], { duration: 320, easing: 'ease-out' });
+  }
+}
+// La onda expansiva avienta las letras lejos de la explosión más cercana
+function blowCard(points) {
+  for (const sp of el.name.children) {
+    const lp = letterPoint(sp);
+    let near = points[0];
+    for (const p of points) if (p.distanceTo(lp) < near.distanceTo(lp)) near = p;
+    const dir = lp.clone().sub(near);
+    const f = 1 / Math.max(0.35, dir.length());
+    dir.normalize();
+    const dx = dir.x * PX * rand(1.2, 2.2) * f, dy = -dir.y * PX * rand(1.2, 2.2) * f - rand(20, 80);
+    sp.animate([
+      { transform: 'none', opacity: 1 },
+      { transform: `translate(${dx}px, ${dy}px) rotate(${rand(-160, 160)}deg) scale(${rand(0.6, 1.1)})`, opacity: 0 },
+    ], { duration: rand(700, 1000), easing: 'cubic-bezier(.15,.75,.3,1)', fill: 'forwards' });
+  }
+  for (const k of [el.kicker, el.amount, el.msg]) {
+    k.animate([{ opacity: 1 }, { opacity: 0, transform: 'scale(.9)' }], { duration: 300, fill: 'forwards' });
+  }
+}
+
+// Líneas de velocidad estilo anime que siguen al kunai en vuelo
+function speedLines(dir) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({
+    map: TEX_RAY, color: 0xdff4ff, transparent: true, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide, toneMapped: false, opacity: 0.8,
+  });
+  const ang = Math.atan2(-dir.y, -dir.x) - Math.PI / 2; // el +Y del rayo apunta hacia atrás
+  for (let i = 0; i < 7; i++) {
+    const m = new THREE.Mesh(rayGeo, mat);
+    m.rotation.z = ang;
+    m.scale.set(rand(0.4, 1), rand(2.5, 5), 1);
+    m.position.set(-dir.y, dir.x, 0).multiplyScalar(rand(-0.9, 0.9)).addScaledVector(dir, rand(-0.3, 0.6));
+    g.add(m);
+  }
+  g.renderOrder = 3;
+  scene.add(g);
+  return { g, mat };
+}
+
 async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = CFG.holdMs, accent = '#ff7a1a' }) {
   const n = Math.min(count, 5);
-  const spread = n === 1 ? [0] : Array.from({ length: n }, (_, i) => lerp(-2.6, 2.6, i / (n - 1)));
-  const ks = spread.map((x, i) => {
+  // El nombre aparece primero: los kunais se clavan en sus letras
+  showCard({ kicker, name, msg, accent, theme: 'kunai' });
+  await wait(520);
+  const spans = [...el.name.children];
+  const pick = (i) => spans[Math.min(spans.length - 1, Math.round(((i + 0.5) / n) * spans.length - 0.5))];
+  const kScale = n > 1 ? 0.72 : 1;
+  // En regalos se reparten a lo ancho del nombre, con separación mínima para no amontonarse
+  const first = letterPoint(spans[0]), last = letterPoint(spans[spans.length - 1]);
+  const cx = (first.x + last.x) / 2, w = Math.max(last.x - first.x, (n - 1) * 1.05);
+  const ks = Array.from({ length: n }, (_, i) => {
     const k = makeKunai();
-    k.userData.target = new THREE.Vector3(ANCHOR.x + x, ANCHOR.y + (n > 1 ? -Math.abs(x) * 0.12 : 0), 0);
-    k.userData.delay = i * 140;
+    const tipPt = n === 1 ? letterPoint(pick(i)) : letterPoint(pick(i)).setX(cx + (i / (n - 1) - 0.5) * w);
+    k.userData.tipPt = tipPt;
+    k.userData.target = tipPt.clone().sub(k.userData.tip.clone().multiplyScalar(kScale));
     return k;
   });
+  const main = ks[Math.floor((n - 1) / 2)];
 
-  // Entran volando desde arriba a la derecha, con la hoja por delante, y se clavan
-  await Promise.all(ks.map(async (k) => {
-    await wait(k.userData.delay);
-    const tgt = k.userData.target, from = tgt.clone().add(new THREE.Vector3(6, 4, 2));
+  // Lanzamiento: entra girando sobre su eje, con la hoja por delante, estela y líneas de velocidad
+  const throwKunai = async (k) => {
+    const tgt = k.userData.target, from = tgt.clone().addScaledVector(KUNAI_DIR, -9).setZ(1.5);
+    const idle = k.userData.idle;
     k.visible = true;
-    k.rotation.set(0, 0, -0.5);
+    const sl = speedLines(KUNAI_DIR);
     sfx.whoosh(true);
-    await tween(420, (t) => {
+    await tween(380, (t) => {
       const e = ease.inCubic(t);
       k.position.lerpVectors(from, tgt, e);
-      k.scale.setScalar(0.6 + 0.4 * e);
-      k.userData.idle.rotation.y = (1 - e) * Math.PI * 6;
+      k.scale.setScalar(kScale * (0.7 + 0.3 * e));
+      idle.quaternion.setFromAxisAngle(KUNAI_DIR, (1 - e) * Math.PI * 8);
+      sl.g.position.copy(k.position);
+      for (let i = 0; i < 3; i++) {
+        FX.spawn({
+          pos: k.position.clone().addScaledVector(KUNAI_DIR, rand(-0.8, 0.4)),
+          vel: KUNAI_DIR.clone().multiplyScalar(-rand(0.5, 2)), life: rand(0.2, 0.4),
+          size: rand(0.08, 0.16), size1: 0.02, colors: [C('#ffffff'), C('#bfe8ff'), C('#4a7aa8')], alpha: 0.7,
+        });
+      }
     });
+    idle.quaternion.identity();
+    // Clavado: golpe seco, polvo, temblor fuerte y las letras cercanas se sacuden
     sfx.thunk();
-    shake(0.08);
-    sparkBurst(tgt.clone().add(new THREE.Vector3(-0.3, -0.9, 0.3)), 18, { speed: 3, size: 0.07, life: 0.5 });
-    // vibración amortiguada al clavarse
-    tween(700, (t) => { k.userData.idle.rotation.z = Math.sin(t * 40) * 0.12 * (1 - t); });
-  }));
+    shake(0.16 * kScale);
+    const tp = k.userData.tipPt;
+    sparkBurst(tp.clone().setZ(0.3), 24, { speed: 3.5, size: 0.07, life: 0.5 });
+    for (let i = 0; i < 6; i++) {
+      SMOKE.spawn({
+        pos: tp.clone().setZ(0.2), vel: new THREE.Vector3(rand(-1.2, 1.2), rand(0.1, 0.8), 0), drag: 3,
+        life: rand(0.5, 0.9), size: 0.2, size1: 0.6, map: TEX_SMOKE, colors: [C('#d8d0c4'), C('#6a645c')], alpha: 0.4,
+      });
+    }
+    joltLetters(tp);
+    tween(260, (t) => { sl.mat.opacity = 0.8 * (1 - t); }).then(() => { scene.remove(sl.g); sl.mat.dispose(); });
+    tween(800, (t) => { idle.rotation.z = Math.sin(t * 42) * 0.14 * (1 - t); });
+  };
+  await throwKunai(main);
 
-  showCard({ kicker, name, msg, accent, theme: 'kunai' });
+  // Regalos: el kunai se multiplica con clones de sombra (¡poof!)
+  for (const k of ks.filter((x) => x !== main)) {
+    await wait(170);
+    k.visible = true;
+    k.position.copy(k.userData.target);
+    k.scale.setScalar(0.001);
+    sfx.poof();
+    for (let i = 0; i < 14; i++) {
+      const d = new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(0, 0.5)).normalize();
+      SMOKE.spawn({
+        pos: k.position.clone().setZ(0.5), vel: d.multiplyScalar(rand(0.8, 2.2)), drag: 3.5,
+        life: rand(0.5, 0.9), size: rand(0.35, 0.6), size1: rand(0.9, 1.4), map: TEX_SMOKE,
+        colors: [C('#ffffff'), C('#cfd4dc'), C('#8a9099')], alpha: 0.85, order: 30,
+      });
+    }
+    tween(260, (t) => k.scale.setScalar(kScale * Math.max(0.001, ease.outBack(t))));
+    joltLetters(k.userData.tipPt, 0.8);
+  }
+  await wait(250);
 
-  // Mecha: el papel se enciende, brilla y chispea cada vez más
+  // Mecha: el papel se consume desde la punta hacia el kunai, con borde incandescente, chispas, ceniza y humo
   sfx.sizzle(hold);
   const start = NOW;
-  const PAPER_HOT = C('#ffb070');
   for (const kn of ks) {
     const g = new THREE.Sprite(new THREE.SpriteMaterial({
       map: TEX_GLOW, color: 0xff7a20, blending: THREE.AdditiveBlending, transparent: true,
@@ -796,33 +954,44 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
     scene.add(g);
     kn.userData.glow = g;
   }
-  const paperBox = new THREE.Box3();
+  const v = new THREE.Vector3();
   const fuse = (now) => {
     const k = Math.min(1, (now - start) / hold);
+    const burnAt = 1.02 - 0.94 * ease.inOutSine(k);
     const flick = 0.7 + Math.random() * 0.6;
     for (const kn of ks) {
       const p = kn.userData.paper;
-      kn.userData.idle.position.set(rand(-1, 1) * 0.03 * k * k, rand(-1, 1) * 0.03 * k * k, 0);
-      if (!p) continue;
-      p.material.emissiveIntensity = k * 1.6 * flick;
-      p.material.color.setRGB(1, 1, 1).lerp(PAPER_HOT, k);
-      paperBox.setFromObject(p);
-      const c = paperBox.getCenter(new THREE.Vector3());
+      kn.userData.idle.position.set(rand(-1, 1) * 0.025 * k * k, rand(-1, 1) * 0.025 * k * k, 0);
+      if (!p?.userData.burn) continue;
+      p.userData.burn.uBurn.value = burnAt;
+      p.material.emissiveIntensity = k * 0.5 * flick;
+      // puntos del papel justo en el borde que se está quemando
+      const us = p.userData.u, P = p.geometry.attributes.position;
+      const edge = [];
+      for (let i = 0; i < us.length; i++) if (Math.abs(us[i] - burnAt) < 0.05) edge.push(i);
+      const at = () => (edge.length
+        ? p.localToWorld(v.fromBufferAttribute(P, edge[(Math.random() * edge.length) | 0])).clone()
+        : kn.position.clone());
       const g = kn.userData.glow;
-      g.position.copy(c).setZ(c.z + 0.3);
-      g.scale.setScalar((0.8 + 1.6 * k) * flick);
-      g.material.opacity = 0.25 + 0.6 * k;
-      const edge = () => new THREE.Vector3(rand(paperBox.min.x, paperBox.max.x), rand(paperBox.min.y, paperBox.max.y), paperBox.max.z + 0.1);
-      const sparks = 1 + Math.floor(k * 5);
-      for (let i = 0; i < sparks; i++) {
+      g.position.copy(at()).setZ(0.6);
+      g.scale.setScalar((0.6 + 0.9 * k) * flick * kScale);
+      g.material.opacity = 0.35 + 0.5 * k;
+      for (let i = 0; i < 2 + Math.floor(k * 4); i++) {
         FX.spawn({
-          pos: edge(), vel: new THREE.Vector3(rand(-2.5, 2.5), rand(0.5, 3.5), rand(-0.5, 1)),
-          grav: 6, drag: 0.5, life: rand(0.35, 0.7), size: rand(0.07, 0.15), size1: 0.02, colors: FIRE, order: 21,
+          pos: at(), vel: new THREE.Vector3(rand(-2, 2), rand(0.5, 3.2), rand(-0.5, 1)),
+          grav: 6, drag: 0.5, life: rand(0.3, 0.65), size: rand(0.06, 0.13), size1: 0.02, colors: FIRE, order: 21,
         });
       }
-      if (Math.random() < 0.2 + k * 0.4) {
+      // ceniza que cae
+      if (Math.random() < 0.35) {
+        FX.spawn({
+          pos: at(), vel: new THREE.Vector3(rand(-0.3, 0.3), rand(-0.2, 0.3), 0), grav: 0.8, life: rand(0.8, 1.4),
+          size: rand(0.04, 0.07), colors: [C('#ff9a40'), C('#5a2a10'), C('#1a1a1a')], alpha: 0.9,
+        });
+      }
+      if (Math.random() < 0.25 + k * 0.4) {
         SMOKE.spawn({
-          pos: edge(), vel: new THREE.Vector3(rand(-0.2, 0.2), rand(0.4, 0.9), 0), life: rand(1, 1.6),
+          pos: at(), vel: new THREE.Vector3(rand(-0.2, 0.2), rand(0.4, 0.9), 0), life: rand(1, 1.6),
           size: 0.25, size1: 0.9, map: TEX_SMOKE, colors: [C('#8a8a8a'), C('#3a3a3a')], alpha: 0.3,
         });
       }
@@ -832,24 +1001,25 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
   await wait(hold);
   emitters.delete(fuse);
 
-  // ¡Boom! en cadena: explota el papel y el kunai sale disparado girando
-  hideCard();
-  for (const kn of ks) {
+  // ¡Boom! en cadena: explota lo que queda del papel, el nombre sale volando y el kunai sale disparado
+  const blasts = ks.map((kn) => kn.userData.glow.position.clone().setZ(0.4));
+  blowCard(blasts);
+  for (const [i, kn] of ks.entries()) {
     const g = kn.userData.glow;
-    const at = g.position.clone().setZ(0.4);
     scene.remove(g);
     g.material.dispose();
-    explode(at, big * (n > 1 ? 0.8 : 1));
+    explode(blasts[i], big * (n > 1 ? 0.8 : 1));
     if (kn.userData.paper) kn.userData.paper.visible = false;
     const from = kn.position.clone(), dir = new THREE.Vector3(rand(-1, 1), rand(-1.4, -0.6), 1.5);
     tween(700, (t) => {
       kn.position.copy(from).addScaledVector(dir, ease.outCubic(t) * 3);
       kn.rotation.z -= 0.35;
-      kn.scale.setScalar(1 - t);
+      kn.scale.setScalar(kScale * (1 - t));
     }).then(() => scene.remove(kn));
     await wait(160);
   }
   await wait(1400);
+  card.className = '';
 }
 
 const FIREBALL = [C('#fff4c0'), C('#ffc040'), C('#ff6a10'), C('#a01c00'), C('#2a0800')];

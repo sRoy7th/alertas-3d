@@ -24,8 +24,11 @@ html, body {
   transform-origin: 0 0;
 }
 
+/* El lienzo va encima del texto: el kunai se ve clavado en las letras y la explosión las cubre */
 #gl {
   position: absolute;
+  z-index: 1;
+  pointer-events: none;
   inset: 0;
   width: 1920px;
   height: 1080px;
