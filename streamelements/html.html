@@ -468,7 +468,7 @@ function makeRig(obj, fitSize, axis = 'y') {
   const box = new THREE.Box3().setFromObject(obj);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
-  const s = fitSize / size[axis];
+  const s = fitSize / (axis === 'max' ? Math.max(size.x, size.y, size.z) : size[axis]);
   const wrap = new THREE.Group();
   obj.position.copy(center).multiplyScalar(-s);
   obj.scale.setScalar(s);
@@ -591,9 +591,9 @@ function rigWallet(root) {
   };
 }
 
-// Cada kunai es un clon con su propio material para el papel (se enciende solo)
-// Dirección en pantalla hacia donde apunta la hoja (abajo a la izquierda)
-const KUNAI_DIR = new THREE.Vector3(-0.55, -1, 0).normalize();
+// Cada kunai es un clon con su propio material para el papel (se quema solo).
+// Se lanza desde el frente y un costado: la hoja apunta hacia dentro de la escena (abajo a la izquierda y al fondo)
+const KUNAI_DIR = new THREE.Vector3(-0.3, -0.55, -0.78).normalize();
 function makeKunai() {
   const obj = M.kunaiSrc.clone(true);
   const part = (name) => {
@@ -601,32 +601,67 @@ function makeKunai() {
     obj.traverse((o) => { if (o.isMesh && (o.parent?.name?.startsWith(name) || o.name.startsWith(name))) m = o; });
     return m;
   };
-  const paper = part('Plane001'), blade = part('pCube1');
+  const paper = part('Plane001'), blade = part('pCube1'), ring = part('pTorus1'), line = part('Line001');
   if (paper) {
     paper.material = paper.material.clone();
     paper.material.emissive = new THREE.Color(0xff5a14);
     paper.material.emissiveIntensity = 0;
   }
-  // Alinea el eje papel→hoja con KUNAI_DIR y gira sobre ese eje para que el papel mire a cámara
-  if (paper && blade) {
+  const center = (o) => new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3());
+  let pivot = null, attach = null;
+  if (paper && blade && ring) {
+    // 1) El eje aro→hoja apunta en KUNAI_DIR
     obj.updateMatrixWorld(true);
-    const cp = new THREE.Box3().setFromObject(paper).getCenter(new THREE.Vector3());
-    const cb = new THREE.Box3().setFromObject(blade).getCenter(new THREE.Vector3());
-    const axis = cb.clone().sub(cp).normalize();
-    const nAttr = paper.geometry.attributes.normal;
-    const nrm = new THREE.Vector3();
+    const q = new THREE.Quaternion().setFromUnitVectors(center(blade).sub(center(ring)).normalize(), KUNAI_DIR);
+    obj.quaternion.premultiply(q);
+    obj.updateMatrixWorld(true);
+
+    // 2) El cordón y el papel cuelgan de un pivote en el aro (el punto del cordón más cercano al aro)
+    const cr = center(ring);
+    attach = cr.clone();
+    if (line) {
+      const lp = line.geometry.attributes.position, v = new THREE.Vector3();
+      let best = Infinity;
+      for (let i = 0; i < lp.count; i++) {
+        v.fromBufferAttribute(lp, i).applyMatrix4(line.matrixWorld);
+        const d = v.distanceTo(cr);
+        if (d < best) { best = d; attach.copy(v); }
+      }
+    }
+    pivot = new THREE.Group();
+    pivot.position.copy(obj.worldToLocal(attach.clone()));
+    obj.add(pivot);
+    pivot.updateMatrixWorld(true);
+    if (line) pivot.attach(line);
+    pivot.attach(paper);
+    const SHORT = 0.45;
+    for (const o of [line, paper]) if (o) { o.position.multiplyScalar(SHORT); if (o === line) o.scale.multiplyScalar(SHORT); }
+    paper.scale.multiplyScalar(0.8);
+    pivot.updateMatrixWorld(true);
+
+    // 3) Gravedad: el papel cuelga hacia abajo y con la cara hacia la cámara
+    const down = new THREE.Vector3(0, -1, 0);
+    const hang = new THREE.Quaternion().setFromUnitVectors(center(paper).sub(attach).normalize(), down);
+    const nAttr = paper.geometry.attributes.normal, nrm = new THREE.Vector3();
     for (let i = 0; i < nAttr.count; i += 7) nrm.add(new THREE.Vector3().fromBufferAttribute(nAttr, i));
-    nrm.transformDirection(paper.matrixWorld);
-    const q = new THREE.Quaternion().setFromUnitVectors(axis, KUNAI_DIR);
-    nrm.applyQuaternion(q).projectOnPlane(KUNAI_DIR).normalize();
-    const want = new THREE.Vector3(0, 0, 1).projectOnPlane(KUNAI_DIR).normalize();
-    const roll = nrm.dot(want) < -0.99
-      ? new THREE.Quaternion().setFromAxisAngle(KUNAI_DIR, Math.PI)
-      : new THREE.Quaternion().setFromUnitVectors(nrm, want);
-    obj.quaternion.premultiply(q).premultiply(roll);
+    nrm.transformDirection(paper.matrixWorld).applyQuaternion(hang).projectOnPlane(down).normalize();
+    const face = new THREE.Vector3(0, 0, 1);
+    const roll = nrm.dot(face) < -0.99
+      ? new THREE.Quaternion().setFromAxisAngle(down, Math.PI)
+      : new THREE.Quaternion().setFromUnitVectors(nrm, face);
+    const objQ = obj.quaternion.clone(), objQi = objQ.clone().invert();
+    const toLocal = (world) => objQi.clone().multiply(world).multiply(objQ);
+    pivot.quaternion.copy(toLocal(roll.multiply(hang)));
+    pivot.userData.rest = pivot.quaternion.clone();
+    // Balanceo: giros en ejes del mundo (x = hacia/desde la cámara, z = de lado a lado)
+    const e = new THREE.Euler();
+    pivot.userData.swing = (ax, az) => {
+      pivot.quaternion.copy(toLocal(new THREE.Quaternion().setFromEuler(e.set(ax, 0, az)))).multiply(pivot.userData.rest);
+    };
   }
-  const rig = makeRig(obj, 2.9, 'y');
+  const rig = makeRig(obj, 3.1, 'max');
   rig.userData.paper = paper;
+  rig.userData.pivot = pivot;
   rig.updateMatrixWorld(true);
   // Punta de la hoja relativa al centro del rig (para clavarla exactamente en una letra)
   if (blade) {
@@ -640,14 +675,14 @@ function makeKunai() {
     }
     rig.userData.tip = tip;
   }
-  if (paper && blade) setupPaperBurn(paper, blade);
+  if (paper && pivot) setupPaperBurn(paper, pivot.getWorldPosition(new THREE.Vector3()));
   return rig;
 }
 
 // El papel se consume desde la punta lejana hacia el kunai: u = 0 junto al aro, u = 1 en el extremo.
 // Un shader descarta lo ya quemado, pinta una franja carbonizada y un borde incandescente.
-function setupPaperBurn(paper, blade) {
-  const cb = new THREE.Box3().setFromObject(blade).getCenter(new THREE.Vector3());
+function setupPaperBurn(paper, near) {
+  const cb = near.clone();
   const cp = new THREE.Box3().setFromObject(paper).getCenter(new THREE.Vector3());
   const a = paper.worldToLocal(cp.clone()).sub(paper.worldToLocal(cb.clone())).normalize();
   const pos = paper.geometry.attributes.position;
@@ -808,7 +843,7 @@ async function puzzleAlert({ level = 1, color = '#ffd36b', kicker, name, amount 
 const PX = 201.5; // píxeles por unidad en z=0
 function letterPoint(span) {
   const x = card.offsetLeft + span.offsetLeft + span.offsetWidth / 2;
-  const y = card.offsetTop + el.name.offsetTop + span.offsetTop + span.offsetHeight * 0.45;
+  const y = card.offsetTop + el.name.offsetTop + span.offsetTop + span.offsetHeight * 0.28;
   return new THREE.Vector3((x - 960) / PX, (540 - y) / PX, 0);
 }
 function joltLetters(pt, radius = 1.2) {
@@ -843,24 +878,30 @@ function blowCard(points) {
   }
 }
 
-// Líneas de velocidad estilo anime que siguen al kunai en vuelo
-function speedLines(dir) {
+// Líneas de zoom estilo anime: rayas radiales que se cierran hacia el punto de impacto
+function zoomLines(center) {
   const g = new THREE.Group();
   const mat = new THREE.MeshBasicMaterial({
-    map: TEX_RAY, color: 0xdff4ff, transparent: true, blending: THREE.AdditiveBlending,
-    depthWrite: false, side: THREE.DoubleSide, toneMapped: false, opacity: 0.8,
+    map: TEX_RAY, color: 0xeaf6ff, transparent: true, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide, toneMapped: false, opacity: 0,
   });
-  const ang = Math.atan2(-dir.y, -dir.x) - Math.PI / 2; // el +Y del rayo apunta hacia atrás
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 26; i++) {
     const m = new THREE.Mesh(rayGeo, mat);
-    m.rotation.z = ang;
-    m.scale.set(rand(0.4, 1), rand(2.5, 5), 1);
-    m.position.set(-dir.y, dir.x, 0).multiplyScalar(rand(-0.9, 0.9)).addScaledVector(dir, rand(-0.3, 0.6));
+    const ang = (i / 26) * Math.PI * 2 + rand(-0.1, 0.1);
+    m.rotation.z = ang - Math.PI / 2;                 // +Y del rayo apunta hacia afuera
+    m.scale.set(rand(0.3, 0.8), rand(2, 4), 1);
+    m.userData.r = rand(2.2, 3.4);
+    m.userData.dir = new THREE.Vector3(Math.cos(ang), Math.sin(ang), 0);
     g.add(m);
   }
+  g.position.copy(center).setZ(0.5);
   g.renderOrder = 3;
   scene.add(g);
-  return { g, mat };
+  const set = (t) => {
+    for (const m of g.children) m.position.copy(m.userData.dir).multiplyScalar(m.userData.r * (1.4 - 0.9 * t));
+    mat.opacity = Math.sin(Math.min(1, t) * Math.PI) * 0.75;
+  };
+  return { g, mat, set };
 }
 
 async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = CFG.holdMs, accent = '#ff7a1a' }) {
@@ -873,29 +914,48 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
   const kScale = n > 1 ? 0.72 : 1;
   // En regalos se reparten a lo ancho del nombre, con separación mínima para no amontonarse
   const first = letterPoint(spans[0]), last = letterPoint(spans[spans.length - 1]);
-  const cx = (first.x + last.x) / 2, w = Math.max(last.x - first.x, (n - 1) * 1.05);
+  const cx = (first.x + last.x) / 2, w = Math.max(last.x - first.x + 1, (n - 1) * 1.15);
   const ks = Array.from({ length: n }, (_, i) => {
     const k = makeKunai();
-    const tipPt = n === 1 ? letterPoint(pick(i)) : letterPoint(pick(i)).setX(cx + (i / (n - 1) - 0.5) * w);
+    // una sola sub: se clava en la última letra para que el papel cuelgue a un lado del nombre
+    const tipPt = n === 1 ? letterPoint(spans[spans.length - 1]) : letterPoint(pick(i)).setX(cx + (i / (n - 1) - 0.5) * w)
+      // regalos: en arco por encima del nombre para que los papeles no tapen el texto
+      .setY(first.y + 1.45 - Math.pow((i / (n - 1) - 0.5) * 2, 2) * 0.25);
     k.userData.tipPt = tipPt;
     k.userData.target = tipPt.clone().sub(k.userData.tip.clone().multiplyScalar(kScale));
     return k;
   });
   const main = ks[Math.floor((n - 1) / 2)];
+  // Péndulo del papel: x = hacia/desde la cámara, z = de lado a lado
+  for (const k of ks) k.userData.sw = { x: 0, vx: 0, z: 0, vz: 0, heat: 0, len: 1 };
+  const swingPhys = (now, dt) => {
+    for (const k of ks) {
+      const sw = k.userData.sw, piv = k.userData.pivot;
+      if (!piv || !k.visible) continue;
+      // más corto (se va quemando) = oscila más rápido; el calor lo empuja al azar
+      const w2 = 55 / Math.max(0.3, sw.len);
+      sw.vz += (-w2 * Math.sin(sw.z) - 1.1 * sw.vz + rand(-1, 1) * 40 * sw.heat) * dt;
+      sw.vx += (-w2 * Math.sin(sw.x) - 1.4 * sw.vx + rand(-1, 1) * 25 * sw.heat) * dt;
+      sw.z += sw.vz * dt;
+      sw.x += sw.vx * dt;
+      piv.userData.swing(sw.x, sw.z);
+    }
+  };
+  emitters.add(swingPhys);
 
   // Lanzamiento: entra girando sobre su eje, con la hoja por delante, estela y líneas de velocidad
   const throwKunai = async (k) => {
-    const tgt = k.userData.target, from = tgt.clone().addScaledVector(KUNAI_DIR, -9).setZ(1.5);
+    const tgt = k.userData.target, from = tgt.clone().addScaledVector(KUNAI_DIR, -7);
     const idle = k.userData.idle;
     k.visible = true;
-    const sl = speedLines(KUNAI_DIR);
+    const zl = zoomLines(k.userData.tipPt);
     sfx.whoosh(true);
     await tween(380, (t) => {
       const e = ease.inCubic(t);
       k.position.lerpVectors(from, tgt, e);
-      k.scale.setScalar(kScale * (0.7 + 0.3 * e));
+      k.scale.setScalar(kScale);
       idle.quaternion.setFromAxisAngle(KUNAI_DIR, (1 - e) * Math.PI * 8);
-      sl.g.position.copy(k.position);
+      zl.set(t);
       for (let i = 0; i < 3; i++) {
         FX.spawn({
           pos: k.position.clone().addScaledVector(KUNAI_DIR, rand(-0.8, 0.4)),
@@ -917,7 +977,13 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
       });
     }
     joltLetters(tp);
-    tween(260, (t) => { sl.mat.opacity = 0.8 * (1 - t); }).then(() => { scene.remove(sl.g); sl.mat.dispose(); });
+    // el papel sigue de largo por inercia y empieza a columpiarse
+    k.userData.sw.vz += rand(-4.5, -3);
+    k.userData.sw.vx += rand(2, 3.5);
+    scene.remove(zl.g);
+    zl.mat.dispose();
+    // destello de impacto: anillo corto y rayas que salen
+    shockwave(tp.clone().setZ(0.4), 2.2, 320, 0xffffff);
     tween(800, (t) => { idle.rotation.z = Math.sin(t * 42) * 0.14 * (1 - t); });
   };
   await throwKunai(main);
@@ -939,6 +1005,7 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
     }
     tween(260, (t) => k.scale.setScalar(kScale * Math.max(0.001, ease.outBack(t))));
     joltLetters(k.userData.tipPt, 0.8);
+    k.userData.sw.vz += rand(-2.5, 2.5);
   }
   await wait(250);
 
@@ -964,6 +1031,8 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
       kn.userData.idle.position.set(rand(-1, 1) * 0.025 * k * k, rand(-1, 1) * 0.025 * k * k, 0);
       if (!p?.userData.burn) continue;
       p.userData.burn.uBurn.value = burnAt;
+      kn.userData.sw.heat = 0.2 + k * 0.8;
+      kn.userData.sw.len = burnAt;
       p.material.emissiveIntensity = k * 0.5 * flick;
       // puntos del papel justo en el borde que se está quemando
       const us = p.userData.u, P = p.geometry.attributes.position;
@@ -1019,6 +1088,7 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
     await wait(160);
   }
   await wait(1400);
+  emitters.delete(swingPhys);
   card.className = '';
 }
 
