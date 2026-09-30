@@ -783,6 +783,45 @@ function splitParts(mesh, pivotOf) {
   return { holder, parts: parts.sort((a, b) => b.userData.tris - a.userData.tris) };
 }
 
+// Convierte una pieza (con su pivote en la raíz) en SkinnedMesh con una cadena de n huesos de la raíz a la punta.
+// Cada vértice se reparte entre los dos huesos más cercanos, así la pieza se dobla suave en vez de girar tiesa.
+function skinChain(mesh, n = 4) {
+  const geo = mesh.geometry, P = geo.attributes.position, v = new THREE.Vector3();
+  const tip = new THREE.Vector3();
+  let far = 0;
+  for (let i = 0; i < P.count; i++) {
+    v.fromBufferAttribute(P, i);
+    const d = v.lengthSq();
+    if (d > far) { far = d; tip.copy(v); }
+  }
+  const len = tip.length(), axis = tip.clone().normalize();
+  const bones = [];
+  for (let i = 0; i < n; i++) {
+    const b = new THREE.Bone();
+    if (i) { b.position.copy(axis).multiplyScalar(len / n); bones[i - 1].add(b); }
+    bones.push(b);
+  }
+  const si = new Uint16Array(P.count * 4), sw = new Float32Array(P.count * 4);
+  for (let i = 0; i < P.count; i++) {
+    const u = Math.min(n - 1, Math.max(0, (v.fromBufferAttribute(P, i).dot(axis) / len) * n - 0.5));
+    const a = Math.floor(u), f = u - a;
+    si[i * 4] = a; si[i * 4 + 1] = Math.min(n - 1, a + 1);
+    sw[i * 4] = 1 - f; sw[i * 4 + 1] = f;
+  }
+  geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+  geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+  const sm = new THREE.SkinnedMesh(geo, mesh.material);
+  sm.position.copy(mesh.position);
+  sm.quaternion.copy(mesh.quaternion);
+  sm.scale.copy(mesh.scale);
+  sm.frustumCulled = false;
+  sm.add(bones[0]);
+  sm.bind(new THREE.Skeleton(bones));
+  mesh.parent.add(sm);
+  mesh.parent.remove(mesh);
+  return { sm, bones };
+}
+
 // Cinnamoroll: sin esqueleto, pero con piezas sueltas. Se separan y se les pone pivote donde se unen al cuerpo
 // (raíz de las orejas, hombros, cadera) y un grupo "cuello" para que cabeza, orejas y ositito se muevan juntos.
 function makeCinnamoroll(root) {
@@ -824,9 +863,11 @@ function makeCinnamoroll(root) {
   root.updateMatrixWorld(true);
   neck.updateMatrixWorld(true);
   for (const o of [head, earR, earL, bear]) neck.attach(o);
+  // Esqueleto: 4 huesos por oreja y 3 en la colita
+  const earRc = skinChain(earR, 4), earLc = skinChain(earL, 4), tailc = skinChain(tail, 3);
 
   const rigd = makeRig(root, 2.5);
-  rigd.userData.cinna = { neck, head, earR, earL, armR, armL, feet, tail, bear, bearY: bear.position.y };
+  rigd.userData.cinna = { neck, head, earR: earRc, earL: earLc, armR, armL, feet, tail: tailc, bear, bearY: bear.position.y };
   return rigd;
 }
 
@@ -1509,6 +1550,17 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
 // Alerta: Cinnamoroll volando
 // ============================================================
 const SKY = [C('#ffffff'), C('#d8f0ff'), C('#8fd0ff'), C('#4f9fd8')];
+// Brillitos en anillo alrededor del personaje (los efectos de luz se dibujan siempre al frente: así no tapan la cara)
+function ringBurst(center, n, colors) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, Math.PI * 2), r = rand(1.3, 1.7);
+    const d = new THREE.Vector3(Math.cos(a), Math.sin(a), 0);
+    FX.spawn({
+      pos: center.clone().addScaledVector(d, r).setZ(0.4), vel: d.multiplyScalar(rand(1, 2.5)), drag: 1.5,
+      life: rand(0.6, 1.1), size: rand(0.06, 0.12), size1: 0.02, colors,
+    });
+  }
+}
 const PINK = [C('#ffffff'), C('#ffd6ea'), C('#ff9cc8'), C('#e0609a')];
 async function cinnaAlert({ kicker, name, amount = '', msg = '', hold = CFG.holdMs }) {
   const R = M.cinna, c = R.userData.cinna, idle = R.userData.idle;
@@ -1524,20 +1576,24 @@ async function cinnaAlert({ kicker, name, amount = '', msg = '', hold = CFG.hold
   const anim = (now, dt) => {
     const s = now / 1000;
     phase += dt * st.flap;
-    // orejas como alas: suben y bajan desde la raíz
-    const f = 0.35 + st.lift * (0.5 + 0.5 * Math.sin(phase));
-    c.earR.rotation.set(0, 0, f);
-    c.earL.rotation.set(0, 0, -f);
+    // orejas como alas de tela: la raíz sube y baja y cada hueso sigue con retraso (la ola llega a la punta)
+    c.earR.bones.forEach((b, i) => {
+      const a = i === 0
+        ? 0.25 + st.lift * 0.45 * (0.5 + 0.5 * Math.sin(phase))
+        : st.lift * 0.32 * Math.sin(phase - i * 0.9);
+      b.rotation.set(0, 0, a);
+      c.earL.bones[i].rotation.set(0, 0, -a);
+    });
     // cuerpo flotando y cabeza ladeada
     idle.position.y = Math.sin(s * 2.4) * 0.12 + Math.sin(phase) * 0.02;
     idle.rotation.set(st.tilt + Math.sin(s * 1.7) * 0.05, Math.sin(s * 0.9) * 0.25, st.roll + Math.sin(s * 1.3) * 0.06);
     c.neck.rotation.set(Math.sin(s * 2.1) * 0.06, 0, Math.sin(s * 1.6) * 0.14);
     // saludo con el brazo derecho; el izquierdo acompaña
-    c.armR.rotation.set(0, 0, st.wave * (1.7 + Math.sin(s * 11) * 0.45) + (1 - st.wave) * Math.sin(s * 3) * 0.2);
-    c.armL.rotation.set(0, 0, -Math.sin(s * 3 + 1) * 0.2 - st.wave * 0.3);
+    c.armR.rotation.set(0, 0, st.wave * (0.8 + Math.sin(s * 10) * 0.3) + (1 - st.wave) * Math.sin(s * 3) * 0.12);
+    c.armL.rotation.set(0, 0, -Math.sin(s * 3 + 1) * 0.12 - st.wave * 0.15);
     // pataleo alternado y colita inquieta
-    c.feet.forEach((ft, i) => ft.rotation.set(Math.sin(s * 9 + i * Math.PI) * 0.35 * st.kick, 0, 0));
-    c.tail.rotation.set(0, Math.sin(s * 6) * 0.35, Math.sin(s * 4) * 0.1);
+    c.feet.forEach((ft, i) => ft.rotation.set(Math.sin(s * 7 + i * Math.PI) * 0.22 * st.kick, 0, 0));
+    c.tail.bones.forEach((b, i) => b.rotation.set(0, Math.sin(s * 6 - i * 0.8) * 0.3, Math.sin(s * 4 - i * 0.6) * 0.08));
     // el ositito rebota sobre la cabeza
     const b = Math.abs(Math.sin(s * 5.5));
     c.bear.position.y = c.bearY + b * 0.05 + st.hop;
@@ -1566,7 +1622,7 @@ async function cinnaAlert({ kicker, name, amount = '', msg = '', hold = CFG.hold
   // se frena, aletea normal y saluda
   tween(500, (t) => { st.flap = lerp(14, 6, t); st.lift = lerp(1, 0.7, t); st.wave = t; });
   sfx.twinkle();
-  sparkBurst(home.clone().setZ(0.5), 40, { speed: 2.5, colors: SKY, size: 0.09 });
+  ringBurst(home, 40, SKY);
   showCard({ kicker, name, amount, msg, accent: '#8fd0ff', theme: 'cinna' });
 
   // corazones y brillitos mientras flota
@@ -1581,7 +1637,7 @@ async function cinnaAlert({ kicker, name, amount = '', msg = '', hold = CFG.hold
     }
     if (Math.random() < dt * 10) {
       FX.spawn({
-        pos: R.position.clone().add(new THREE.Vector3(rand(-1.5, 1.5), rand(-1, 1.5), 0.3)),
+        pos: R.position.clone().add(new THREE.Vector3((Math.random() < 0.5 ? -1 : 1) * rand(1.2, 1.9), rand(-1, 1.5), 0.3)),
         vel: new THREE.Vector3(0, rand(0.1, 0.4), 0), life: rand(0.6, 1.1), size: rand(0.05, 0.1), colors: SKY,
       });
     }
@@ -1602,7 +1658,7 @@ async function cinnaAlert({ kicker, name, amount = '', msg = '', hold = CFG.hold
   });
   R.rotation.x = 0;
   st.hop = 0;
-  sparkBurst(R.position.clone().setZ(0.5), 30, { speed: 2, colors: PINK, size: 0.08 });
+  ringBurst(R.position, 30, PINK);
   sfx.twinkle();
   await wait(Math.max(700, hold * 0.65 - 900));
 
