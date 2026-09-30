@@ -223,7 +223,9 @@ html, body {
 #card .amount.bump { animation: bump .18s ease-out; opacity: 1; }
 
 /* ---- Modo prueba (?test) ---- */
-body.test {
+/* Fuera del lienzo 1920x1080 queda negro, para ver dónde termina la pantalla */
+body.test { background: #000; }
+body.test #stage {
   background:
     radial-gradient(ellipse at 30% 20%, #2b3a55 0%, transparent 60%),
     radial-gradient(ellipse at 80% 90%, #3d2140 0%, transparent 55%),

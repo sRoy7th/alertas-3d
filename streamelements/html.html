@@ -387,6 +387,12 @@ const sfx = {
     tone(f * 2.76, 0, 0.18, { gain: 0.035 });
     tone(f * 5.4, 0, 0.1, { gain: 0.02 });
   },
+  click() {
+    const f = rand(2600, 3400);
+    tone(f, 0, 0.09, { type: 'square', gain: 0.035 });
+    tone(f * 0.5, 0, 0.12, { type: 'triangle', gain: 0.07 });
+    noise(0, 0.04, { type: 'highpass', from: 6000, to: 4000, gain: 0.12 });
+  },
   land() {
     tone(160, 0, 0.25, { to: 70, gain: 0.45 });
     noise(0, 0.15, { type: 'lowpass', from: 900, to: 200, gain: 0.3 });
@@ -465,13 +471,20 @@ function makeRig(obj, fitSize, axis = 'y') {
 const M = {};
 async function loadModels() {
   const [puzzle, kunai, wallet] = await Promise.all(
-    ['puzzle.glb', 'kunai.glb', 'wallet.glb'].map((f) => loader.loadAsync(CFG.models + f)),
+    ['puzzle_parts.glb', 'kunai.glb', 'wallet.glb'].map((f) => loader.loadAsync(CFG.models + f)),
   );
   M.puzzle = makeRig(puzzle.scene, 2.3);
+  // Piezas sueltas del rompecabezas (pieza_00 es el cuerpo). Se ensamblan de abajo hacia arriba:
+  // primero el Ojo, luego esquineros, barra y al final el aro.
+  const parts = [];
+  puzzle.scene.traverse((o) => { if (o.isMesh && o.name !== 'pieza_00') parts.push(o); });
+  M.puzzle.userData.parts = parts
+    .sort((a, b) => a.position.y - b.position.y)
+    .map((obj) => ({ obj, home: obj.position.clone(), qHome: obj.quaternion.clone(), start: new THREE.Vector3(), q0: new THREE.Quaternion() }));
   // La boca de la rana mira hacia +X en el modelo: la giramos hacia la cámara
   wallet.scene.rotation.y = -Math.PI / 2;
   wallet.scene.updateMatrixWorld(true);
-  M.wallet = makeRig(wallet.scene, 3.6, 'x');
+  M.wallet = makeRig(wallet.scene, 3.2, 'x');
   M.kunaiSrc = kunai.scene;
 }
 
@@ -533,13 +546,38 @@ async function puzzleAlert({ level = 1, color = '#ffd36b', kicker, name, amount 
   P.position.copy(ANCHOR);
   idle.position.set(0, 0, 0);
   idle.rotation.set(0, 0, 0);
+  // Las piezas arrancan dispersas y giradas; más lejos y más lento en un raid
+  const parts = P.userData.parts;
+  const spread = raid ? 1.6 : 1;
+  for (const p of parts) {
+    const dir = new THREE.Vector3(p.home.x, p.home.y, 0);
+    if (dir.length() < 60) dir.set(rand(-1, 1), rand(-1, 1), 0);
+    dir.normalize();
+    p.start.copy(p.home).addScaledVector(dir, rand(320, 520) * spread).add(new THREE.Vector3(0, 0, rand(150, 350)));
+    p.q0.setFromEuler(new THREE.Euler(rand(-Math.PI, Math.PI), rand(-Math.PI, Math.PI), rand(-Math.PI, Math.PI)));
+    p.obj.position.copy(p.start);
+    p.obj.quaternion.copy(p.q0);
+  }
   sfx.whoosh(true);
-  await tween(950, (t) => {
+  const spinIn = tween(950, (t) => {
     const e = ease.outCubic(t);
     P.scale.setScalar(ease.outBack(t));
     P.rotation.y = (1 - e) * -Math.PI * 4;
     P.position.y = ANCHOR.y - 1.4 * (1 - e);
   });
+  await wait(300);
+  const step = raid ? 110 : 70, fly = raid ? 650 : 480;
+  const wp = new THREE.Vector3();
+  await Promise.all(parts.map((p, i) => wait(i * step).then(() => tween(fly, (t) => {
+    const e = ease.outBack(t);
+    p.obj.position.lerpVectors(p.start, p.home, e);
+    p.obj.quaternion.slerpQuaternions(p.q0, p.qHome, Math.min(1, ease.outCubic(t)));
+  })).then(() => {
+    sfx.click();
+    p.obj.getWorldPosition(wp);
+    sparkBurst(wp.clone().setZ(wp.z + 0.2), 6, { speed: 1.6, colors, size: 0.06, life: 0.4 });
+  })));
+  await spinIn;
 
   const eye = ANCHOR.clone().setZ(0.6);
   flash(eye, 3 + level, 500, color);
@@ -553,7 +591,8 @@ async function puzzleAlert({ level = 1, color = '#ffd36b', kicker, name, amount 
   }
   showCard({ kicker, name, amount, msg, accent: color });
 
-  const rayTarget = 1.6 + level * 0.55;
+  // Largo máximo ~1.9 u: el rayo se desvanece antes del borde superior del lienzo (1.93 u sobre ANCHOR)
+  const rayTarget = 1.2 + level * 0.18;
   tween(700, (t) => {
     rays.scale.setScalar(0.001 + rayTarget * ease.outBack(t));
     halo.material.opacity = 0.35 + 0.12 * level * t;
@@ -588,8 +627,18 @@ async function puzzleAlert({ level = 1, color = '#ffd36b', kicker, name, amount 
   hideCard();
   sfx.whoosh(false);
   const r0 = P.rotation.y;
+  // Se desarma: las piezas salen disparadas hacia afuera mientras el cuerpo se encoge
+  for (const p of parts) {
+    p.start.copy(p.home);
+    p.q0.setFromEuler(new THREE.Euler(rand(-3, 3), rand(-3, 3), rand(-3, 3)));
+  }
   await tween(650, (t) => {
     const e = ease.inCubic(t);
+    for (const p of parts) {
+      const d = new THREE.Vector3(p.home.x, p.home.y, 120).normalize();
+      p.obj.position.copy(p.home).addScaledVector(d, ease.outCubic(t) * 450);
+      p.obj.quaternion.slerpQuaternions(p.qHome, p.q0, t);
+    }
     P.scale.setScalar(1 - e);
     P.rotation.y = r0 + e * Math.PI * 3;
     P.position.y = ANCHOR.y + e * 0.6;
@@ -745,10 +794,12 @@ const FRONT = Math.PI / 2;
 
 async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
   const W = M.wallet, idle = W.userData.idle;
-  const base = ANCHOR.clone().add(new THREE.Vector3(0, -0.2, 0));
+  const base = ANCHOR.clone().add(new THREE.Vector3(0, 0.15, 0));
   // pose: giro base; sway: cuánto se balancea/brinca sola (0 = quieta)
-  const pose = { yaw: FRONT, pitch: -0.15, roll: 0, sway: 0 };
+  // pitch > 0 inclina la cara hacia la cámara (se ven los ojos y la boca de frente)
+  const pose = { yaw: FRONT, pitch: 0.32, roll: 0, sway: 0 };
   const spring = { v: 0, x: 0 };
+  const nod = { v: 0, x: 0 }; // cabeceo de "ñam" al tragar
   let got = 0;
   W.visible = true;
   W.scale.setScalar(1);
@@ -761,14 +812,17 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
     const s = now / 1000;
     spring.v += (-spring.x * 220 - spring.v * 12) * dt;
     spring.x += spring.v * dt;
-    W.scale.setScalar(1 + 0.3 * Math.min(1, got / 40));
+    nod.v += (-nod.x * 160 - nod.v * 10) * dt;
+    nod.x += nod.v * dt;
+    W.scale.setScalar(1 + 0.22 * Math.min(1, got / 40));
     idle.scale.set(1 + spring.x, 1 - spring.x, 1 + spring.x);
+    // bamboleo tipo pato: se ladea al ritmo de los brinquitos y gira poco para no perder el frente
     idle.rotation.set(
-      pose.pitch + Math.sin(s * 3.1) * 0.08 * pose.sway,
-      pose.yaw + Math.sin(s * 1.7) * 0.75 * pose.sway,
-      pose.roll + Math.sin(s * 2.3) * 0.1 * pose.sway,
+      pose.pitch + nod.x,
+      pose.yaw + Math.sin(s * 1.6) * 0.32 * pose.sway,
+      pose.roll + Math.sin(s * 4.2) * 0.16 * pose.sway,
     );
-    idle.position.y = Math.abs(Math.sin(s * 4.2)) * 0.14 * pose.sway;
+    idle.position.y = Math.abs(Math.sin(s * 4.2)) * 0.16 * pose.sway;
     for (const c of coins) {
       if (c.done) continue;
       c.t += dt;
@@ -783,6 +837,7 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
         scene.remove(c.mesh);
         got++;
         spring.v += 1.4;
+        nod.v += 2.2;
         sfx.coin();
         FX.spawn({ pos: c.mesh.position.clone(), vel: new THREE.Vector3(0, 0.6, 0), life: 0.35, size: 0.35, size1: 0.6, colors: GOLD });
         bumpAmount(money(amount * got / n));
@@ -830,7 +885,7 @@ async function walletAlert({ name, amount, msg = '', hold = CFG.holdMs }) {
   await tween(700, (t) => {
     W.position.y = y0 + Math.sin(t * Math.PI) * 0.9;
     pose.yaw = FRONT + ease.inOutSine(t) * Math.PI * 2;
-    pose.pitch = -0.15 - Math.sin(t * Math.PI) * 0.35;
+    pose.pitch = 0.32 - Math.sin(t * Math.PI) * 0.45;
   });
   pose.yaw = FRONT;
   sfx.land();
@@ -991,7 +1046,7 @@ window.__ready = true;
 // ============================================================
 if (TEST) {
   document.body.classList.add('test');
-  window.__dbg = { THREE, M, scene, camera, makeKunai, ANCHOR, rays, halo };
+  window.__dbg = { THREE, M, scene, camera, makeKunai, ANCHOR, rays, halo, loader, makeRig };
   const panel = document.createElement('div');
   panel.id = 'panel';
   const btn = (label, fn) => {
