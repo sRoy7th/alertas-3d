@@ -362,6 +362,12 @@ const sfx = {
     tone(f * 2.76, 0, 0.18, { gain: 0.035 });
     tone(f * 5.4, 0, 0.1, { gain: 0.02 });
   },
+  // vidrio que se estrella: crujido agudo y tintineos
+  glass() {
+    noise(0, 0.18, { type: 'bandpass', from: 7000, to: 3500, q: 0.8, gain: 0.5, attack: 0.003 });
+    noise(0, 0.05, { type: 'highpass', from: 9000, to: 6000, gain: 0.4, attack: 0.002 });
+    for (let i = 0; i < 6; i++) tone(rand(3500, 7500), rand(0.02, 0.35), rand(0.08, 0.2), { gain: 0.03 });
+  },
   // nube de humo de un clon de sombra
   poof() {
     noise(0, 0.35, { type: 'lowpass', from: 1800, to: 300, gain: 0.45, attack: 0.01 });
@@ -387,6 +393,149 @@ const sfx = {
     noise(0, 0.15, { type: 'lowpass', from: 900, to: 200, gain: 0.3 });
   },
 };
+
+// ============================================================
+// Pantalla rota: grietas procedurales en un canvas 2D entre el texto y el 3D
+// ============================================================
+const crackCanvas = document.getElementById('crack');
+const cctx = crackCanvas.getContext('2d');
+const cracks = [];
+const toPx = (v) => ({ x: 960 + v.x * 201.5, y: 540 - v.y * 201.5 });
+
+function makeCrack(x, y, size) {
+  const radial = [];
+  const N = 9 + ((Math.random() * 5) | 0);
+  for (let i = 0; i < N; i++) {
+    const a0 = (i / N) * Math.PI * 2 + rand(-0.25, 0.25);
+    const len = size * rand(0.45, 1);
+    const pts = [[x, y]];
+    let px = x, py = y, a = a0, d = 0;
+    const seg = len / rand(6, 9);
+    while (d < len) {
+      a += rand(-0.3, 0.3) * 0.6;
+      const st = seg * rand(0.6, 1.3);
+      px += Math.cos(a) * st;
+      py += Math.sin(a) * st;
+      d += st;
+      pts.push([px, py]);
+    }
+    radial.push({ pts, w: rand(0.6, 1.8), a: a0, o: rand(0.55, 1) });
+  }
+  // ramificaciones
+  const branches = [];
+  for (const r of radial) {
+    if (Math.random() < 0.7) {
+      const k = 2 + ((Math.random() * (r.pts.length - 3)) | 0);
+      const [bx, by] = r.pts[k];
+      let a = r.a + (Math.random() < 0.5 ? -1 : 1) * rand(0.4, 0.9), px = bx, py = by;
+      const pts = [[bx, by]];
+      for (let j = 0; j < 4; j++) {
+        a += rand(-0.3, 0.3);
+        px += Math.cos(a) * size * 0.06;
+        py += Math.sin(a) * size * 0.06;
+        pts.push([px, py]);
+      }
+      branches.push({ pts, w: rand(0.5, 1.1), o: rand(0.4, 0.9) });
+    }
+  }
+  // anillos concéntricos que unen grietas vecinas
+  const rings = [];
+  const at = (r, dist) => {
+    let acc = 0;
+    for (let j = 1; j < r.pts.length; j++) {
+      const [x0, y0] = r.pts[j - 1], [x1, y1] = r.pts[j];
+      const l = Math.hypot(x1 - x0, y1 - y0);
+      if (acc + l >= dist) { const t = (dist - acc) / l; return [x0 + (x1 - x0) * t, y0 + (y1 - y0) * t]; }
+      acc += l;
+    }
+    return null;
+  };
+  for (const [ri, skip] of [[0.1, 0.05], [0.24, 0.35], [0.45, 0.65]]) {
+    for (let i = 0; i < N; i++) {
+      if (Math.random() < skip) continue;
+      const p0 = at(radial[i], size * ri * rand(0.85, 1.15));
+      const p1 = at(radial[(i + 1) % N], size * ri * rand(0.85, 1.15));
+      if (!p0 || !p1) continue;
+      const mx = (p0[0] + p1[0]) / 2 + rand(-6, 6), my = (p0[1] + p1[1]) / 2 + rand(-6, 6);
+      rings.push({ pts: [p0, [mx, my], p1], w: rand(0.5, 1.2), o: rand(0.35, 0.85) });
+    }
+  }
+  // facetas: triángulos translúcidos entre grietas vecinas (cada fragmento refleja distinto)
+  const facets = [];
+  for (let i = 0; i < N; i++) {
+    const p0 = at(radial[i], size * rand(0.18, 0.32)), p1 = at(radial[(i + 1) % N], size * rand(0.18, 0.32));
+    if (p0 && p1 && Math.random() < 0.6) facets.push({ pts: [[x, y], p0, p1], o: rand(0.03, 0.11) });
+  }
+  return { x, y, size, radial, branches, rings, facets, p: 0, alpha: 1 };
+}
+
+function strokePath(pts, upto, w, o = 1) {
+  const n = Math.max(2, Math.ceil(pts.length * upto));
+  cctx.beginPath();
+  cctx.moveTo(pts[0][0], pts[0][1]);
+  for (let j = 1; j < n && j < pts.length; j++) cctx.lineTo(pts[j][0], pts[j][1]);
+  // sombra, filo brillante y halo: se lee como vidrio sobre cualquier fondo
+  cctx.strokeStyle = `rgba(0,0,0,${0.4 * o})`; cctx.lineWidth = w + 1.4; cctx.stroke();
+  cctx.strokeStyle = `rgba(210,235,255,${0.14 * o})`; cctx.lineWidth = w + 4; cctx.stroke();
+  cctx.strokeStyle = `rgba(255,255,255,${0.92 * o})`; cctx.lineWidth = w; cctx.stroke();
+}
+
+function drawCracks() {
+  cctx.clearRect(0, 0, 1920, 1080);
+  cctx.lineCap = 'round';
+  cctx.lineJoin = 'round';
+  for (const c of cracks) {
+    cctx.globalAlpha = c.alpha;
+    // zona astillada del centro
+    const g = cctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.size * 0.12);
+    g.addColorStop(0, 'rgba(255,255,255,.55)');
+    g.addColorStop(1, 'rgba(220,240,255,0)');
+    cctx.fillStyle = g;
+    cctx.beginPath();
+    cctx.arc(c.x, c.y, c.size * 0.12 * Math.min(1, c.p * 3), 0, Math.PI * 2);
+    cctx.fill();
+    const q = Math.max(0, (c.p - 0.45) / 0.55);
+    for (const f of c.facets) {
+      cctx.fillStyle = `rgba(225,240,255,${f.o * q})`;
+      cctx.beginPath();
+      f.pts.forEach(([fx, fy], j) => (j ? cctx.lineTo(fx, fy) : cctx.moveTo(fx, fy)));
+      cctx.fill();
+    }
+    for (const r of c.radial) strokePath(r.pts, c.p, r.w, r.o);
+    if (q > 0) {
+      for (const b of c.branches) strokePath(b.pts, q, b.w, b.o);
+      for (const r of c.rings) strokePath(r.pts, q, r.w, r.o);
+    }
+  }
+  cctx.globalAlpha = 1;
+}
+
+async function crackAt(world, size = 330) {
+  const { x, y } = toPx(world);
+  const c = makeCrack(x, y, size);
+  cracks.push(c);
+  sfx.glass();
+  await tween(170, (t) => { c.p = ease.outCubic(t); drawCracks(); });
+}
+
+// Al explotar: el vidrio se desprende en pedacitos y las grietas se desvanecen
+function shatterCracks() {
+  for (const c of cracks) {
+    const w = new THREE.Vector3((c.x - 960) / 201.5, (540 - c.y) / 201.5, 0.3);
+    for (let i = 0; i < 26; i++) {
+      FX.spawn({
+        pos: w.clone().add(new THREE.Vector3(rand(-0.6, 0.6), rand(-0.6, 0.6), 0)),
+        vel: new THREE.Vector3(rand(-1.5, 1.5), rand(-0.5, 1.5), rand(0, 1.5)), grav: 7,
+        life: rand(0.6, 1.1), size: rand(0.04, 0.1), size1: 0.03, colors: [C('#ffffff'), C('#cfe8ff'), C('#6f8fb0')],
+      });
+    }
+  }
+  const a0 = cracks.map((c) => c.alpha);
+  return tween(450, (t) => {
+    cracks.forEach((c, i) => { c.alpha = a0[i] * (1 - t); });
+    drawCracks();
+  }).then(() => { cracks.length = 0; drawCracks(); });
+}
 
 // ============================================================
 // Tarjeta de texto
@@ -952,6 +1101,7 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
       });
     }
     joltLetters(tp);
+    crackAt(tp);
     // el papel sigue de largo por inercia y empieza a columpiarse
     k.userData.sw.vz += rand(-4.5, -3);
     k.userData.sw.vx += rand(2, 3.5);
@@ -980,6 +1130,7 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
     }
     tween(260, (t) => k.scale.setScalar(kScale * Math.max(0.001, ease.outBack(t))));
     joltLetters(k.userData.tipPt, 0.8);
+    crackAt(k.userData.tipPt, 230);
     k.userData.sw.vz += rand(-2.5, 2.5);
   }
   await wait(250);
@@ -1048,6 +1199,7 @@ async function kunaiAlert({ count = 1, big = 1, kicker, name, msg = '', hold = C
   // ¡Boom! en cadena: explota lo que queda del papel, el nombre sale volando y el kunai sale disparado
   const blasts = ks.map((kn) => kn.userData.glow.position.clone().setZ(0.4));
   blowCard(blasts);
+  shatterCracks();
   for (const [i, kn] of ks.entries()) {
     const g = kn.userData.glow;
     scene.remove(g);

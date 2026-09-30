@@ -24,10 +24,18 @@ html, body {
   transform-origin: 0 0;
 }
 
-/* El lienzo va encima del texto: el kunai se ve clavado en las letras y la explosión las cubre */
+/* Capas: texto (abajo) → vidrio roto → 3D (arriba). El kunai atraviesa el vidrio y sale hacia la cámara */
+#crack {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 1920px;
+  height: 1080px;
+  pointer-events: none;
+}
 #gl {
   position: absolute;
-  z-index: 1;
+  z-index: 2;
   pointer-events: none;
   inset: 0;
   width: 1920px;
